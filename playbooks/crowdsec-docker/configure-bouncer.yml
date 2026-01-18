@@ -1,0 +1,50 @@
+- name: Configure CrowdSec nftables bouncer
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Check if nftables-bouncer is registered in CrowdSec
+      ansible.builtin.command:
+        cmd: docker exec crowdsec cscli bouncers list
+      register: crowdsec_bouncers_list
+      changed_when: false
+
+    - name: Delete existing nftables-bouncer registration in CrowdSec (if present)
+      ansible.builtin.command:
+        cmd: docker exec crowdsec cscli bouncers delete nftables-bouncer
+      when: "'nftables-bouncer' in (crowdsec_bouncers_list.stdout | default(''))"
+
+    - name: Create API key for nftables-bouncer in CrowdSec (via docker exec)
+      ansible.builtin.command:
+        cmd: docker exec crowdsec cscli bouncers add nftables-bouncer
+      register: crowdsec_bouncer_add
+      changed_when: "'API key for' in crowdsec_bouncer_add.stdout"
+      no_log: true
+
+    - name: Extract nftables-bouncer API key from cscli output
+      ansible.builtin.set_fact:
+        crowdsec_nftables_api_key: >-
+          {{
+            crowdsec_bouncer_add.stdout
+            | regex_search('[A-Za-z0-9+/=]{30,}')
+          }}
+      when: "'API key for' in crowdsec_bouncer_add.stdout"
+      no_log: true
+
+    - name: Configure API key in CrowdSec firewall bouncer config
+      ansible.builtin.lineinfile:
+        path: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+        regexp: '^\s*api_key:'
+        line: "api_key: {{ crowdsec_nftables_api_key }}"
+        backup: yes
+      when:
+        - crowdsec_nftables_api_key is defined
+        - crowdsec_nftables_api_key | length > 0
+      no_log: true
+
+    - name: Restart CrowdSec firewall bouncer service
+      ansible.builtin.service:
+        name: crowdsec-firewall-bouncer
+        state: restarted
+        enabled: true

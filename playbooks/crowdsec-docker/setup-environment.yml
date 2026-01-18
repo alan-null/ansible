@@ -1,0 +1,136 @@
+- name: Setup CrowdSec Docker environment
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    keyring_dir: /etc/apt/keyrings
+    crowdsec_repo_url: https://packagecloud.io/crowdsec/crowdsec
+    crowdsec_keyring_asc: "{{ keyring_dir }}/crowdsec_crowdsec-archive-keyring.asc"
+    crowdsec_keyring_gpg: "{{ keyring_dir }}/crowdsec_crowdsec-archive-keyring.gpg"
+    crowdsec_trusted_gpg: /etc/apt/trusted.gpg.d/crowdsec_crowdsec.gpg
+    crowdsec_apt_list_file: /etc/apt/sources.list.d/crowdsec_crowdsec.list
+
+  tasks:
+    - name: Ensure required base packages for nftables and CrowdSec are installed
+      ansible.builtin.apt:
+        name:
+          - nftables
+          - rsyslog
+          - rsyslog-gnutls
+          - debian-archive-keyring
+          - curl
+          - gnupg
+          - apt-transport-https
+        state: present
+        update_cache: yes
+
+    - name: Enable and restart nftables
+      ansible.builtin.service:
+        name: nftables
+        enabled: true
+        state: restarted
+
+    - name: Ensure /etc/apt/keyrings exists
+      ansible.builtin.file:
+        path: "{{ keyring_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Download CrowdSec APT repository GPG key (ASCII)
+      ansible.builtin.get_url:
+        url: "{{ crowdsec_repo_url }}/gpgkey"
+        dest: "{{ crowdsec_keyring_asc }}"
+        mode: "0644"
+        owner: root
+        group: root
+        force: false
+
+    - name: Dearmor CrowdSec GPG key
+      ansible.builtin.command: >
+        gpg --dearmor
+        -o {{ crowdsec_keyring_gpg }}
+        {{ crowdsec_keyring_asc }}
+      args:
+        creates: "{{ crowdsec_keyring_gpg }}"
+
+    - name: Ensure permissions on dearmored CrowdSec keyring
+      ansible.builtin.file:
+        path: "{{ crowdsec_keyring_gpg }}"
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Install CrowdSec key into APT trusted keyring (compat)
+      ansible.builtin.copy:
+        src: "{{ crowdsec_keyring_gpg }}"
+        dest: "{{ crowdsec_trusted_gpg }}"
+        owner: root
+        group: root
+        mode: "0644"
+        remote_src: true
+
+    - name: Configure CrowdSec APT repository
+      ansible.builtin.copy:
+        dest: "{{ crowdsec_apt_list_file }}"
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          deb [signed-by={{ crowdsec_keyring_gpg }}] {{ crowdsec_repo_url }}/any any main
+
+    - name: Update apt cache after adding CrowdSec repo
+      ansible.builtin.apt:
+        update_cache: yes
+
+    - name: Install CrowdSec firewall bouncer (iptables)
+      ansible.builtin.apt:
+        name: crowdsec-firewall-bouncer-iptables
+        state: present
+
+    - name: Ensure DOCKER-USER chain is enabled in CrowdSec firewall bouncer config
+      ansible.builtin.lineinfile:
+        path: /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+        regexp: '^\s*-\s*DOCKER-USER'
+        line: '  - DOCKER-USER'
+        insertafter: '^\s*iptables_chains:'
+        backup: yes
+
+    - name: Ensure override dir exists for CrowdSec bouncer
+      ansible.builtin.file:
+        path: /etc/systemd/system/crowdsec-firewall-bouncer.service.d
+        state: directory
+        mode: "0755"
+
+    - name: Ensure CrowdSec bouncer starts after nftables
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/crowdsec-firewall-bouncer.service.d/override.conf
+        mode: "0644"
+        content: |
+          [Unit]
+          After=nftables.service
+          Requires=nftables.service
+
+    - name: Stop Docker before flushing nftables
+      ansible.builtin.service:
+        name: docker
+        state: stopped
+      ignore_errors: true
+
+    - name: Flush nftables ruleset
+      ansible.builtin.command: nft flush ruleset
+      changed_when: false
+
+    - name: Start Docker after nftables flush
+      ansible.builtin.service:
+        name: docker
+        state: started
+      ignore_errors: true
+
+    - name: Enable and restart CrowdSec firewall bouncer
+      ansible.builtin.service:
+        name: crowdsec-firewall-bouncer
+        enabled: true
+        state: restarted
