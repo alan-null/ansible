@@ -1,0 +1,64 @@
+- name: Install Docker on Debian
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    docker_gpg_path: /etc/apt/keyrings/docker.asc
+    docker_repo_url: https://download.docker.com/linux/debian
+
+  tasks:
+    - name: Ensure required packages are installed
+      apt:
+        name:
+          - ca-certificates
+          - curl
+        state: present
+        update_cache: yes
+
+    - name: Ensure /etc/apt/keyrings directory exists
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: Download Docker GPG key
+      get_url:
+        url: "{{ docker_repo_url }}/gpg"
+        dest: "{{ docker_gpg_path }}"
+        mode: "0644"
+
+    - name: Map architecture for Docker repo
+      set_fact:
+        docker_arch: >-
+          {{ 'amd64' if ansible_architecture == 'x86_64'
+             else 'arm64' if ansible_architecture == 'aarch64'
+             else ansible_architecture }}
+
+    - name: Add Docker Apt repository
+      apt_repository:
+        repo: >-
+          deb [arch={{ docker_arch }} signed-by={{ docker_gpg_path }}]
+          {{ docker_repo_url }} {{ ansible_lsb.codename | default(ansible_distribution_release) }} stable
+        filename: docker
+        state: present
+
+    - name: Update apt cache after adding Docker repo
+      apt:
+        update_cache: yes
+
+    - name: Install Docker packages
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+          - docker-buildx-plugin
+          - docker-compose-plugin
+        state: present
+
+    - name: Ensure Docker service is enabled and started
+      service:
+        name: docker
+        state: started
+        enabled: yes
