@@ -1,0 +1,55 @@
+---
+- name: Disable ACT LED on Raspberry Pi Zero 2 W (persistent via systemd)
+  hosts: all
+  become: true
+  gather_facts: false
+
+  vars:
+    service_name: disable-act-led.service
+    service_path: /etc/systemd/system/disable-act-led.service
+
+  tasks:
+    - name: Disable ACT LED immediately for current session
+      ansible.builtin.shell: |
+        echo none > /sys/class/leds/ACT/trigger || true
+        echo 0 > /sys/class/leds/ACT/brightness || true
+
+    - name: Install systemd unit to disable ACT LED
+      ansible.builtin.copy:
+        dest: "{{ service_path }}"
+        content: |
+          [Unit]
+          Description=Disable Raspberry Pi ACT LED
+          After=local-fs.target
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/sh -c 'echo none > /sys/class/leds/ACT/trigger || true'
+          ExecStart=/bin/sh -c 'echo 0 > /sys/class/leds/ACT/brightness || true'
+          RemainAfterExit=yes
+          TimeoutStartSec=0
+
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: '0644'
+
+    - name: Reload systemd daemon
+      ansible.builtin.command: systemctl daemon-reload
+      changed_when: true
+
+    - name: Enable and start disable-act-led.service
+      ansible.builtin.systemd:
+        name: "{{ service_name }}"
+        enabled: true
+        state: started
+
+    - name: Verify service is active (info only)
+      ansible.builtin.command: systemctl is-active {{ service_name }}
+      register: svc_active
+      ignore_errors: true
+
+    - name: Show verification result
+      ansible.builtin.debug:
+        msg: "Service {{ service_name }} is {{ svc_active.stdout | default('unknown') }}"
