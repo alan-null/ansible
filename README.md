@@ -19,6 +19,10 @@ sudo apt install ansible -y
 Run playbooks from this repository with `ansible-playbook`. For example, to run the `master.yml` playbook locally (uses a local connection):
 
 ```bash
+# Check syntax of a playbook before running
+ansible-playbook led-iot-ap.yml --syntax-check
+
+# Run the master playbook locally
 ansible-playbook -i localhost, master.yml -e "ansible_connection=local"
 ```
 
