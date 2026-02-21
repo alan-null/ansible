@@ -1,0 +1,69 @@
+- name: Configure Linux host with OpenVPN and SSH-safe routing
+  hosts: all
+  become: yes
+  gather_facts: yes
+
+  vars_prompt:
+    - name: vpn_username
+      prompt: "Enter VPN account username"
+      private: no
+    - name: vpn_password
+      prompt: "Enter VPN account password"
+      private: yes
+
+  vars:
+    openvpn_client_config_path: /etc/openvpn/client.conf
+    openvpn_auth_file_path: /etc/openvpn/auth.txt
+
+    ssh_bypass_network: "8.8.8.0"         # Replace with your SSH client network to avoid lockout when VPN is active
+    ssh_bypass_netmask: "255.255.255.0"   # Example uses /24; adjust to match your SSH client network
+
+  tasks:
+    - name: Refresh apt package cache
+      apt:
+        update_cache: yes
+
+    - name: Install required system packages
+      apt:
+        name:
+          - cron
+          - openvpn
+          - wget
+          - nftables
+        state: present
+
+    - name: Install OpenVPN client configuration
+      copy:
+        src: config.ovpn
+        dest: "{{ openvpn_client_config_path }}"
+        mode: "0600"
+
+    - name: Ensure OpenVPN does not cache credentials
+      lineinfile:
+        path: "{{ openvpn_client_config_path }}"
+        line: "auth-nocache"
+        state: present
+
+    - name: Ensure OpenVPN uses auth file
+      lineinfile:
+        path: "{{ openvpn_client_config_path }}"
+        line: "auth-user-pass {{ openvpn_auth_file_path }}"
+        state: present
+
+    - name: Keep SSH client network outside VPN route
+      lineinfile:
+        path: "{{ openvpn_client_config_path }}"
+        line: "route {{ ssh_bypass_network }} {{ ssh_bypass_netmask }} net_gateway"
+        state: present
+
+    - name: Create OpenVPN auth file
+      copy:
+        content: "{{ vpn_username }}\n{{ vpn_password }}"
+        dest: "{{ openvpn_auth_file_path }}"
+        mode: "0600"
+
+    - name: Enable and start OpenVPN client service
+      systemd:
+        name: openvpn@client
+        state: started
+        enabled: yes
